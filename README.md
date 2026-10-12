@@ -26,11 +26,16 @@ there is more below - and they would otherwise show up once per slice.
 
 The interesting part is overlays, which would otherwise repeat on every slice:
 
-- `position: sticky` becomes `position: static`, so the element renders once at
-  its natural place in the document flow.
+- `position: sticky` becomes `position: relative` with its offsets cleared, so
+  the element renders once at its natural place in the document flow and
+  popovers anchored inside it stay where they were.
 - `position: fixed` elements are shown on a single slice and hidden for the
   rest - bars whose top sits in the lower half of the viewport go on the last
   slice, everything else (headers, chat bubbles) on the first.
+- `position: fixed` elements as tall as the scrolling area - a sidebar, a modal
+  backdrop - are instead grown by the scroll length and moved along with the
+  scroll. They run down the whole image, laid out the way they would be in a
+  window tall enough to show the page at once.
 - Both passes run again before every shot, not once at the top. Apps commonly
   only turn a toolbar sticky once you have scrolled a little, and a re-render
   will overwrite whatever style the extension just set.
@@ -45,6 +50,6 @@ and every change is reverted afterwards, including the original scroll offset.
   itself does not scroll, and it has to cover a quarter of the viewport.
 - Very tall pages are scaled down to stay inside Chrome's canvas limits
   (~32k px per side).
-- A full screen overlay - cookie banner, open modal - is captured as-is at the
-  top of the image. Dismiss it first.
+- A full screen overlay - cookie banner, open modal - is captured as-is, its
+  backdrop over the whole image. Dismiss it first.
 - Content inside cross origin iframes and shadow DOM overlays is left alone.

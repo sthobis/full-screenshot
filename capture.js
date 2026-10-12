@@ -57,34 +57,62 @@
     await wait(150);
 
     // Overlays would otherwise repeat on every slice.
-    //   sticky -> static, so it renders once at its natural place in the flow.
+    //   sticky -> relative with no offsets, so it renders once at its natural
+    //             place in the flow and what is positioned inside it stays put.
     //   fixed  -> shown on one slice only: bars anchored to the lower half of
     //             the viewport on the last, everything else on the first.
     //             Ones that sit clear of the scrolling area are left alone,
     //             they are part of the frame and only drawn once anyway.
+    //   fixed, as tall as the scrolling area (a sidebar, a backdrop) -> grown
+    //             by the scroll length and moved along with the scroll, so it
+    //             runs down the whole image the way it would in a window tall
+    //             enough to show the page at once.
     // Rescanned before every shot rather than once up front: plenty of apps
     // only turn an element sticky *after* you scroll, and a re-render happily
     // overwrites the style we just set.
     // ponytail: a full pass per slice, cheaper than tracking mutations. Swap in
     // a MutationObserver if it ever shows up in the capture time.
-    const neutralize = () => {
+    const neutralize = (at, isLast) => {
       for (const el of document.querySelectorAll('body *')) {
-        const pos = getComputedStyle(el).position;
+        const cs = getComputedStyle(el);
+        const pos = cs.position;
         if (pos !== 'fixed' && pos !== 'sticky') continue;
         if (!seen.has(el)) {
           const r = el.getBoundingClientRect();
+          const rec = { saved: el.getAttribute('style') };
           if (pos === 'fixed') {
             if (!(r.width && r.height)) continue;
             if (r.bottom <= box.top || r.top >= box.bottom || r.right <= box.left || r.left >= box.right) continue;
+            if (r.top <= box.top && r.bottom >= box.bottom) {
+              const top = parseFloat(cs.top);
+              rec.rail = { top: Number.isNaN(top) ? r.top : top, height: r.height + maxScroll };
+            } else {
+              rec.slice = r.top > innerHeight / 2 ? 'last' : 'first';
+              rec.opacity = [el.style.getPropertyValue('opacity'), el.style.getPropertyPriority('opacity')];
+            }
           }
-          seen.set(el, {
-            saved: el.getAttribute('style'),
-            slice: pos !== 'fixed' ? null : r.top > innerHeight / 2 ? 'last' : 'first',
-          });
+          seen.set(el, rec);
         }
-        if (pos === 'sticky') el.style.setProperty('position', 'static', 'important');
+        if (pos === 'sticky') {
+          el.style.setProperty('position', 'relative', 'important');
+          el.style.setProperty('inset', 'auto', 'important');
+        }
+      }
+      for (const [el, rec] of seen) {
+        if (rec.rail) {
+          el.style.setProperty('top', `${rec.rail.top - at}px`, 'important');
+          el.style.setProperty('bottom', 'auto', 'important');
+          el.style.setProperty('height', `${rec.rail.height}px`, 'important');
+          el.style.setProperty('box-sizing', 'border-box', 'important');
+        } else if (rec.slice) {
+          // Opacity, not visibility: a child can switch visibility back on.
+          if (rec.slice === 'last' ? isLast : at === 0) el.style.setProperty('opacity', ...rec.opacity);
+          else el.style.setProperty('opacity', '0', 'important');
+        }
       }
     };
+    // Once ahead of the first shot: growing a sidebar makes it lay out again.
+    neutralize(0, maxScroll < 1);
 
     // The image is the viewport with the scrolling area unrolled to its full
     // length: whatever surrounds it is drawn once, above and below.
@@ -148,26 +176,26 @@
     // The very top and the very end are kept, nothing is drawn there.
     const trim = Math.min(24, Math.floor(box.height / 4));
     const step = box.height - 2 * trim;
+    let done = 0; // how far down the unrolled area is painted
 
     for (let y = 0; y < maxScroll + step; y += step) {
       scroller.scrollTo(0, y);
       await wait(y === 0 ? 250 : 180); // settle, and let lazy images load
       const at = Math.round(scroller.scrollTop);
       const isLast = at >= maxScroll - 1;
-      neutralize();
-      for (const [el, rec] of seen) {
-        if (!rec.slice) continue;
-        const show = rec.slice === 'last' ? isLast : at === 0;
-        el.style.setProperty('visibility', show ? 'visible' : 'hidden', 'important');
-      }
+      neutralize(at, isLast);
       await wait(30);
 
       const dataUrl = await chrome.runtime.sendMessage({ type: 'grab' });
       if (!dataUrl) throw new Error('Chrome refused to capture this tab.');
       const img = await createImageBitmap(await (await fetch(dataUrl)).blob());
       if (y === 0) paint(img, 0, 0, vw, box.bottom, 0);
-      const cut = at > 0 ? trim : 0;
-      paint(img, box.left, box.top + cut, box.width, box.height - cut - (isLast ? 0 : trim), at);
+      // The last scroll usually falls short of a full step. Start below what
+      // is already painted, the earlier slice is the one showing the overlays.
+      const cut = Math.max(at > 0 ? trim : 0, done - at);
+      const h = box.height - cut - (isLast ? 0 : trim);
+      paint(img, box.left, box.top + cut, box.width, h, at);
+      done = at + cut + h;
       if (isLast) paint(img, 0, box.bottom, vw, vh - box.bottom, maxScroll);
       img.close();
       if (isLast) break;
